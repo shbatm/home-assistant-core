@@ -1,7 +1,12 @@
 """Constants for the ISY Platform."""
 import logging
 
-from pyisy.constants import PROP_ON_LEVEL, PROP_RAMP_RATE
+from pyisyox.constants import (
+    DEV_BL_ADDR,
+    DEV_CMD_MEMORY_WRITE,
+    PROP_ON_LEVEL,
+    PROP_RAMP_RATE,
+)
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.climate import (
@@ -60,17 +65,21 @@ DOMAIN = "isy994"
 
 MANUFACTURER = "Universal Devices, Inc"
 
-CONF_NETWORK = "network"
+CONF_ENABLE_NETWORKING = "enable_networking"
+CONF_ENABLE_NODESERVERS = "enable_nodeservers"
+CONF_ENABLE_PROGRAMS = "enable_programs"
+CONF_ENABLE_VARIABLES = "enable_variables"
 CONF_IGNORE_STRING = "ignore_string"
-CONF_SENSOR_STRING = "sensor_string"
-CONF_VAR_SENSOR_STRING = "variable_sensor_string"
-CONF_TLS_VER = "tls"
+CONF_NETWORK = "network"
 CONF_RESTORE_LIGHT_STATE = "restore_light_state"
+CONF_SENSOR_STRING = "sensor_string"
+CONF_TLS_VER = "tls"
+CONF_VAR_SENSOR_STRING = "variable_sensor_string"
 
 DEFAULT_IGNORE_STRING = "{IGNORE ME}"
 DEFAULT_SENSOR_STRING = "sensor"
 DEFAULT_RESTORE_LIGHT_STATE = False
-DEFAULT_TLS_VERSION = 1.1
+DEFAULT_TLS_VERSION = "Default"
 DEFAULT_PROGRAM_STRING = "HA."
 DEFAULT_VAR_SENSOR_STRING = "HA."
 
@@ -88,6 +97,7 @@ NODE_PLATFORMS = [
     Platform.SWITCH,
 ]
 NODE_AUX_PROP_PLATFORMS = [
+    Platform.BINARY_SENSOR,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,
@@ -419,7 +429,7 @@ UOM_FRIENDLY_NAME = {
     "120": UnitOfVolumetricFlux.INCHES_PER_DAY,
 }
 
-UOM_TO_STATES = {
+UOM_TO_STATES: dict[str, dict[int, str]] = {
     "11": {  # Deadbolt Status
         0: STATE_UNLOCKED,
         100: STATE_LOCKED,
@@ -660,3 +670,5 @@ SCHEME_HTTP = "http"
 HTTP_PORT = 80
 SCHEME_HTTPS = "https"
 HTTPS_PORT = 443
+
+BACKLIGHT_MEMORY_FILTER = {"memory": DEV_BL_ADDR, "cmd1": DEV_CMD_MEMORY_WRITE}

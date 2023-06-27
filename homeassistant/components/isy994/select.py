@@ -1,25 +1,21 @@
 """Support for ISY select entities."""
 from __future__ import annotations
 
-from typing import cast
-
-from pyisy.constants import (
+from pyisyox.constants import (
     ATTR_ACTION,
     BACKLIGHT_INDEX,
     CMD_BACKLIGHT,
     COMMAND_FRIENDLY_NAME,
-    DEV_BL_ADDR,
-    DEV_CMD_MEMORY_WRITE,
-    DEV_MEMORY,
     INSTEON_RAMP_RATES,
-    ISY_VALUE_UNKNOWN,
     PROP_RAMP_RATE,
     TAG_ADDRESS,
     UOM_INDEX as ISY_UOM_INDEX,
     UOM_TO_STATES,
+    NodeChangeAction,
 )
-from pyisy.helpers import EventListener, NodeProperty
-from pyisy.nodes import Node, NodeChangedEvent
+from pyisyox.helpers.events import ATTR_EVENT_INFO, EventListener, NodeChangedEvent
+from pyisyox.helpers.models import NodeProperty
+from pyisyox.nodes import Node
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.config_entries import ConfigEntry
@@ -36,20 +32,19 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import _LOGGER, DOMAIN, UOM_INDEX
-from .entity import ISYAuxControlEntity
+from .const import _LOGGER, BACKLIGHT_MEMORY_FILTER, DOMAIN, UOM_INDEX
+from .entity import ISYNodeEntity
 from .models import IsyData
 
 
-def time_string(i: int) -> str:
+def time_string(i: float) -> str:
     """Return a formatted ramp rate time string."""
-    if i >= 60:
-        return f"{(float(i)/60):.1f} {UnitOfTime.MINUTES}"
+    if i >= 60.0:
+        return f"{(i/60.0):.1f} {UnitOfTime.MINUTES}"
     return f"{i} {UnitOfTime.SECONDS}"
 
 
 RAMP_RATE_OPTIONS = [time_string(rate) for rate in INSTEON_RAMP_RATES.values()]
-BACKLIGHT_MEMORY_FILTER = {"memory": DEV_BL_ADDR, "cmd1": DEV_CMD_MEMORY_WRITE}
 
 
 async def async_setup_entry(
@@ -76,7 +71,7 @@ async def async_setup_entry(
             options = RAMP_RATE_OPTIONS
         elif control == CMD_BACKLIGHT:
             options = BACKLIGHT_INDEX
-        elif uom := node.aux_properties[control].uom == UOM_INDEX:
+        elif (uom := node.aux_properties[control].uom) == UOM_INDEX:
             if options_dict := UOM_TO_STATES.get(uom):
                 options = list(options_dict.values())
 
@@ -86,7 +81,7 @@ async def async_setup_entry(
             entity_category=EntityCategory.CONFIG,
             options=options,
         )
-        entity_detail = {
+        entity_detail: dict = {
             "node": node,
             "control": control,
             "unique_id": f"{isy_data.uid_base(node)}_{control}",
@@ -110,14 +105,14 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class ISYRampRateSelectEntity(ISYAuxControlEntity, SelectEntity):
+class ISYRampRateSelectEntity(ISYNodeEntity, SelectEntity):
     """Representation of a ISY/IoX Aux Control Ramp Rate Select entity."""
 
     @property
     def current_option(self) -> str | None:
         """Return the selected entity option to represent the entity state."""
         node_prop: NodeProperty = self._node.aux_properties[self._control]
-        if node_prop.value == ISY_VALUE_UNKNOWN:
+        if node_prop.value is None:
             return None
 
         return RAMP_RATE_OPTIONS[int(node_prop.value)]
@@ -128,19 +123,19 @@ class ISYRampRateSelectEntity(ISYAuxControlEntity, SelectEntity):
         await self._node.set_ramp_rate(RAMP_RATE_OPTIONS.index(option))
 
 
-class ISYAuxControlIndexSelectEntity(ISYAuxControlEntity, SelectEntity):
+class ISYAuxControlIndexSelectEntity(ISYNodeEntity, SelectEntity):
     """Representation of a ISY/IoX Aux Control Index Select entity."""
 
     @property
     def current_option(self) -> str | None:
         """Return the selected entity option to represent the entity state."""
         node_prop: NodeProperty = self._node.aux_properties[self._control]
-        if node_prop.value == ISY_VALUE_UNKNOWN:
+        if node_prop.value is None:
             return None
 
         if options_dict := UOM_TO_STATES.get(node_prop.uom):
-            return cast(str, options_dict.get(node_prop.value, node_prop.value))
-        return cast(str, node_prop.formatted)
+            return options_dict.get(str(node_prop.value), str(node_prop.value))
+        return node_prop.formatted
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
@@ -151,7 +146,7 @@ class ISYAuxControlIndexSelectEntity(ISYAuxControlEntity, SelectEntity):
         )
 
 
-class ISYBacklightSelectEntity(ISYAuxControlEntity, SelectEntity, RestoreEntity):
+class ISYBacklightSelectEntity(ISYNodeEntity, SelectEntity, RestoreEntity):
     """Representation of a ISY/IoX Backlight Select entity."""
 
     _assumed_state = True  # Backlight values aren't read from device
@@ -165,7 +160,13 @@ class ISYBacklightSelectEntity(ISYAuxControlEntity, SelectEntity, RestoreEntity)
         device_info: DeviceInfo | None,
     ) -> None:
         """Initialize the ISY Backlight Select entity."""
-        super().__init__(node, control, unique_id, description, device_info)
+        super().__init__(
+            node=node,
+            control=control,
+            unique_id=unique_id,
+            description=description,
+            device_info=device_info,
+        )
         self._memory_change_handler: EventListener | None = None
         self._attr_current_option = None
 
@@ -178,11 +179,12 @@ class ISYBacklightSelectEntity(ISYAuxControlEntity, SelectEntity, RestoreEntity)
             self._attr_current_option = last_state.state
 
         # Listen to memory writing events to update state if changed in ISY
-        self._memory_change_handler = self._node.isy.nodes.status_events.subscribe(
+        self._memory_change_handler = self._node.isy.nodes.platform_events.subscribe(
             self.async_on_memory_write,
             event_filter={
                 TAG_ADDRESS: self._node.address,
-                ATTR_ACTION: DEV_MEMORY,
+                ATTR_ACTION: NodeChangeAction.DEVICE_MEMORY,
+                ATTR_EVENT_INFO: BACKLIGHT_MEMORY_FILTER,
             },
             key=self.unique_id,
         )
@@ -190,8 +192,6 @@ class ISYBacklightSelectEntity(ISYAuxControlEntity, SelectEntity, RestoreEntity)
     @callback
     def async_on_memory_write(self, event: NodeChangedEvent, key: str) -> None:
         """Handle a memory write event from the ISY Node."""
-        if not (BACKLIGHT_MEMORY_FILTER.items() <= event.event_info.items()):
-            return  # This was not a backlight event
         option = BACKLIGHT_INDEX[event.event_info["value"]]
         if option == self._attr_current_option:
             return  # Change was from this entity, don't update twice

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pyisy import ISY
+from pyisyox import ISY
 
 from homeassistant.components import system_health
 from homeassistant.config_entries import ConfigEntry
@@ -37,8 +37,8 @@ async def system_health_info(hass: HomeAssistant) -> dict[str, Any]:
     health_info["host_reachable"] = await system_health.async_check_can_reach_url(
         hass, f"{entry.data[CONF_HOST]}{ISY_URL_POSTFIX}"
     )
-    health_info["device_connected"] = isy.connected
-    health_info["last_heartbeat"] = isy.websocket.last_heartbeat
+    health_info["device_connected"] = str(isy.connected)
+    health_info["last_heartbeat"] = str(isy.websocket.last_heartbeat)
     health_info["websocket_status"] = isy.websocket.status
 
     return health_info

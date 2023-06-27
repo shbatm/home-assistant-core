@@ -1285,7 +1285,7 @@ pyiqvia==2022.04.0
 pyiss==1.0.1
 
 # homeassistant.components.isy994
-pyisy==3.1.14
+pyisyox==1.0.0a9
 
 # homeassistant.components.jvc_projector
 pyjvcprojector==1.0.6

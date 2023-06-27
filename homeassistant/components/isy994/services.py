@@ -3,16 +3,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from pyisy.constants import COMMAND_FRIENDLY_NAME
+from pyisyox.constants import COMMAND_FRIENDLY_NAME
 import voluptuous as vol
 
 from homeassistant.const import (
     CONF_ADDRESS,
     CONF_COMMAND,
     CONF_NAME,
+    CONF_TYPE,
     CONF_UNIT_OF_MEASUREMENT,
 )
 from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.helpers import entity_platform
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import async_get_platforms
 from homeassistant.helpers.service import entity_service_call
@@ -20,7 +22,19 @@ from homeassistant.helpers.service import entity_service_call
 from .const import _LOGGER, DOMAIN
 
 # Common Services for All Platforms:
+SERVICE_SYSTEM_QUERY = "system_query"
+SERVICE_SET_VARIABLE = "set_variable"
 SERVICE_SEND_PROGRAM_COMMAND = "send_program_command"
+SERVICE_RUN_NETWORK_RESOURCE = "run_network_resource"
+SERVICE_CLEANUP = "cleanup_entities"
+
+INTEGRATION_SERVICES = [
+    SERVICE_SYSTEM_QUERY,
+    SERVICE_SET_VARIABLE,
+    SERVICE_SEND_PROGRAM_COMMAND,
+    SERVICE_RUN_NETWORK_RESOURCE,
+    SERVICE_CLEANUP,
+]
 
 # Entity specific methods (valid for most Groups/ISY Scenes, Lights, Switches, Fans)
 SERVICE_SEND_RAW_NODE_COMMAND = "send_raw_node_command"
@@ -79,6 +93,18 @@ def valid_isy_commands(value: Any) -> str:
 
 SCHEMA_GROUP = "name-address"
 
+SERVICE_SYSTEM_QUERY_SCHEMA = vol.Schema(
+    {vol.Optional(CONF_ADDRESS): cv.string, vol.Optional(CONF_ISY): cv.string}
+)
+
+SERVICE_SET_RAMP_RATE_SCHEMA = {
+    vol.Required(CONF_VALUE): vol.All(vol.Coerce(int), vol.Range(0, 31))
+}
+
+SERVICE_SET_VALUE_SCHEMA = {
+    vol.Required(CONF_VALUE): vol.All(vol.Coerce(int), vol.Range(0, 255))
+}
+
 SERVICE_SEND_RAW_NODE_COMMAND_SCHEMA = {
     vol.Required(CONF_COMMAND): vol.All(cv.string, valid_isy_commands),
     vol.Optional(CONF_VALUE): vol.All(vol.Coerce(int), vol.Range(0, 255)),
@@ -104,8 +130,23 @@ SERVICE_SET_USER_CODE_SCHEMA = {
     vol.Required(CONF_USER_NUM): vol.Coerce(int),
     vol.Required(CONF_CODE): vol.Coerce(int),
 }
-
 SERVICE_DELETE_USER_CODE_SCHEMA = {vol.Required(CONF_USER_NUM): vol.Coerce(int)}
+
+SERVICE_SET_VARIABLE_SCHEMA = vol.All(
+    cv.has_at_least_one_key(CONF_ADDRESS, CONF_TYPE, CONF_NAME),
+    vol.Schema(
+        {
+            vol.Exclusive(CONF_NAME, SCHEMA_GROUP): cv.string,
+            vol.Inclusive(CONF_ADDRESS, SCHEMA_GROUP): vol.Coerce(int),
+            vol.Inclusive(CONF_TYPE, SCHEMA_GROUP): vol.All(
+                vol.Coerce(int), vol.Range(1, 2)
+            ),
+            vol.Optional(CONF_INIT, default=False): bool,
+            vol.Required(CONF_VALUE): vol.Coerce(int),
+            vol.Optional(CONF_ISY): cv.string,
+        }
+    ),
+)
 
 SERVICE_SEND_PROGRAM_COMMAND_SCHEMA = vol.All(
     cv.has_at_least_one_key(CONF_ADDRESS, CONF_NAME),
@@ -119,12 +160,25 @@ SERVICE_SEND_PROGRAM_COMMAND_SCHEMA = vol.All(
     ),
 )
 
+SERVICE_RUN_NETWORK_RESOURCE_SCHEMA = vol.All(
+    cv.has_at_least_one_key(CONF_ADDRESS, CONF_NAME),
+    vol.Schema(
+        {
+            vol.Exclusive(CONF_NAME, SCHEMA_GROUP): cv.string,
+            vol.Exclusive(CONF_ADDRESS, SCHEMA_GROUP): vol.Coerce(int),
+            vol.Optional(CONF_ISY): cv.string,
+        }
+    ),
+)
+
 
 @callback
-def async_setup_services(hass: HomeAssistant) -> None:  # noqa: C901
+def async_setup_services(hass: HomeAssistant) -> None:
     """Create and register services for the ISY integration."""
     existing_services = hass.services.async_services().get(DOMAIN)
-    if existing_services and SERVICE_SEND_PROGRAM_COMMAND in existing_services:
+    if existing_services and any(
+        service in INTEGRATION_SERVICES for service in existing_services
+    ):
         # Integration-level services have already been added. Return.
         return
 
@@ -138,7 +192,7 @@ def async_setup_services(hass: HomeAssistant) -> None:  # noqa: C901
         for config_entry_id in hass.data[DOMAIN]:
             isy_data = hass.data[DOMAIN][config_entry_id]
             isy = isy_data.root
-            if isy_name and isy_name != isy.conf["name"]:
+            if isy_name and isy_name != isy.config.name:
                 continue
             program = None
             if address:
@@ -219,6 +273,23 @@ def async_setup_services(hass: HomeAssistant) -> None:  # noqa: C901
 
 
 @callback
+def async_setup_lock_services(hass: HomeAssistant) -> None:
+    """Create device-specific services for the ISY Integration."""
+    platform = entity_platform.async_get_current_platform()
+
+    platform.async_register_entity_service(
+        SERVICE_SET_ZWAVE_LOCK_USER_CODE,
+        SERVICE_SET_USER_CODE_SCHEMA,
+        "async_set_zwave_lock_user_code",
+    )
+    platform.async_register_entity_service(
+        SERVICE_DELETE_ZWAVE_LOCK_USER_CODE,
+        SERVICE_DELETE_USER_CODE_SCHEMA,
+        "async_delete_zwave_lock_user_code",
+    )
+
+
+@callback
 def async_unload_services(hass: HomeAssistant) -> None:
     """Unload services for the ISY integration."""
     if hass.data[DOMAIN]:
@@ -226,7 +297,9 @@ def async_unload_services(hass: HomeAssistant) -> None:
         return
 
     existing_services = hass.services.async_services().get(DOMAIN)
-    if not existing_services or SERVICE_SEND_PROGRAM_COMMAND not in existing_services:
+    if not existing_services or not any(
+        service in INTEGRATION_SERVICES for service in existing_services
+    ):
         return
 
     _LOGGER.info("Unloading ISY994 Services")

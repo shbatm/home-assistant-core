@@ -1,17 +1,18 @@
 """Representation of ISY/IoX buttons."""
 from __future__ import annotations
 
-from pyisy import ISY
-from pyisy.constants import (
+from pyisyox import ISY
+from pyisyox.constants import (
     ATTR_ACTION,
-    NC_NODE_ENABLED,
-    PROTO_INSTEON,
     TAG_ADDRESS,
     TAG_ENABLED,
+    NodeChangeAction,
+    Protocol,
 )
-from pyisy.helpers import EventListener, NodeProperty
-from pyisy.networking import NetworkCommand
-from pyisy.nodes import Node
+from pyisyox.helpers.events import EventListener
+from pyisyox.helpers.models import NodeProperty
+from pyisyox.networking import NetworkCommand
+from pyisyox.nodes import Node
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
@@ -48,7 +49,7 @@ async def async_setup_entry(
                 device_info=device_info[node.address],
             )
         )
-        if node.protocol == PROTO_INSTEON:
+        if node.protocol == Protocol.INSTEON:
             entities.append(
                 ISYNodeBeepButtonEntity(
                     node=node,
@@ -88,6 +89,7 @@ class ISYNodeButtonEntity(ButtonEntity):
 
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _node: Node | ISY | NetworkCommand
 
     def __init__(
         self,
@@ -116,13 +118,13 @@ class ISYNodeButtonEntity(ButtonEntity):
     async def async_added_to_hass(self) -> None:
         """Subscribe to the node change events."""
         # No status for NetworkResources or ISY Query buttons
-        if not hasattr(self._node, "status_events") or not hasattr(self._node, "isy"):
+        if not isinstance(self._node, Node):
             return
-        self._availability_handler = self._node.isy.nodes.status_events.subscribe(
+        self._availability_handler = self._node.isy.nodes.platform_events.subscribe(
             self.async_on_update,
             event_filter={
                 TAG_ADDRESS: self._node.address,
-                ATTR_ACTION: NC_NODE_ENABLED,
+                ATTR_ACTION: NodeChangeAction.NODE_ENABLED,
             },
             key=self.unique_id,
         )
@@ -138,6 +140,8 @@ class ISYNodeButtonEntity(ButtonEntity):
 class ISYNodeQueryButtonEntity(ISYNodeButtonEntity):
     """Representation of a device query button entity."""
 
+    _node: Node | ISY
+
     async def async_press(self) -> None:
         """Press the button."""
         await self._node.query()
@@ -145,6 +149,8 @@ class ISYNodeQueryButtonEntity(ISYNodeButtonEntity):
 
 class ISYNodeBeepButtonEntity(ISYNodeButtonEntity):
     """Representation of a device beep button entity."""
+
+    _node: Node
 
     async def async_press(self) -> None:
         """Press the button."""
@@ -155,6 +161,7 @@ class ISYNetworkResourceButtonEntity(ISYNodeButtonEntity):
     """Representation of an ISY/IoX Network Resource button entity."""
 
     _attr_has_entity_name = False
+    _node: NetworkCommand
 
     async def async_press(self) -> None:
         """Press the button."""

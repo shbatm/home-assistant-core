@@ -3,46 +3,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from pyisy.constants import ISY_VALUE_UNKNOWN
+from pyisyox.nodes import Node
+from pyisyox.programs import Program
 
 from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import (
-    AddEntitiesCallback,
-    async_get_current_platform,
-)
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .entity import ISYNodeEntity, ISYProgramEntity
-from .services import (
-    SERVICE_DELETE_USER_CODE_SCHEMA,
-    SERVICE_DELETE_ZWAVE_LOCK_USER_CODE,
-    SERVICE_SET_USER_CODE_SCHEMA,
-    SERVICE_SET_ZWAVE_LOCK_USER_CODE,
-)
+from .services import async_setup_lock_services
 
 VALUE_TO_STATE = {0: False, 100: True}
-
-
-@callback
-def async_setup_lock_services(hass: HomeAssistant) -> None:
-    """Create lock-specific services for the ISY Integration."""
-    platform = async_get_current_platform()
-
-    platform.async_register_entity_service(
-        SERVICE_SET_ZWAVE_LOCK_USER_CODE,
-        SERVICE_SET_USER_CODE_SCHEMA,
-        "async_set_zwave_lock_user_code",
-    )
-    platform.async_register_entity_service(
-        SERVICE_DELETE_ZWAVE_LOCK_USER_CODE,
-        SERVICE_DELETE_USER_CODE_SCHEMA,
-        "async_delete_zwave_lock_user_code",
-    )
 
 
 async def async_setup_entry(
@@ -53,7 +29,9 @@ async def async_setup_entry(
     devices: dict[str, DeviceInfo] = isy_data.devices
     entities: list[ISYLockEntity | ISYLockProgramEntity] = []
     for node in isy_data.nodes[Platform.LOCK]:
-        entities.append(ISYLockEntity(node, devices.get(node.primary_node)))
+        entities.append(
+            ISYLockEntity(node=node, device_info=devices.get(node.primary_node))
+        )
 
     for name, status, actions in isy_data.programs[Platform.LOCK]:
         entities.append(ISYLockProgramEntity(name, status, actions))
@@ -65,10 +43,12 @@ async def async_setup_entry(
 class ISYLockEntity(ISYNodeEntity, LockEntity):
     """Representation of an ISY lock device."""
 
+    _node: Node
+
     @property
     def is_locked(self) -> bool | None:
         """Get whether the lock is in locked state."""
-        if self._node.status == ISY_VALUE_UNKNOWN:
+        if self._node.status is None:
             return None
         return VALUE_TO_STATE.get(self._node.status)
 
@@ -99,6 +79,8 @@ class ISYLockEntity(ISYNodeEntity, LockEntity):
 
 class ISYLockProgramEntity(ISYProgramEntity, LockEntity):
     """Representation of a ISY lock program."""
+
+    _actions: Program
 
     @property
     def is_locked(self) -> bool:

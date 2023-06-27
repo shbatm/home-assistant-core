@@ -3,9 +3,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from pyisy.constants import ISY_VALUE_UNKNOWN
-from pyisy.helpers import NodeProperty
-from pyisy.nodes import Node
+from pyisyox.nodes import Node
 
 from homeassistant.components.light import ColorMode, LightEntity
 from homeassistant.config_entries import ConfigEntry
@@ -16,7 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import _LOGGER, CONF_RESTORE_LIGHT_STATE, DOMAIN, UOM_PERCENTAGE
-from .entity import ISYNodeEntity
+from .entity import ISYNodeEntity, NodeEventType
 
 ATTR_LAST_BRIGHTNESS = "last_brightness"
 
@@ -44,6 +42,7 @@ class ISYLightEntity(ISYNodeEntity, LightEntity, RestoreEntity):
 
     _attr_color_mode = ColorMode.BRIGHTNESS
     _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+    _node: Node
 
     def __init__(
         self,
@@ -59,14 +58,14 @@ class ISYLightEntity(ISYNodeEntity, LightEntity, RestoreEntity):
     @property
     def is_on(self) -> bool:
         """Get whether the ISY light is on."""
-        if self._node.status == ISY_VALUE_UNKNOWN:
+        if self._node.status is None:
             return False
         return int(self._node.status) != 0
 
     @property
     def brightness(self) -> int | None:
         """Get the brightness of the ISY light."""
-        if self._node.status == ISY_VALUE_UNKNOWN:
+        if self._node.status is None:
             return None
         # Special Case for ISY Z-Wave Devices using % instead of 0-255:
         if self._node.uom == UOM_PERCENTAGE:
@@ -80,15 +79,15 @@ class ISYLightEntity(ISYNodeEntity, LightEntity, RestoreEntity):
             _LOGGER.debug("Unable to turn off light")
 
     @callback
-    def async_on_update(self, event: NodeProperty) -> None:
+    def async_on_update(self, event: NodeEventType, key: str) -> None:
         """Save brightness in the update event from the ISY Node."""
-        if self._node.status not in (0, ISY_VALUE_UNKNOWN):
+        if self._node.status:  # Not 0 or None
             self._last_brightness = self._node.status
             if self._node.uom == UOM_PERCENTAGE:
                 self._last_brightness = round(self._node.status * 255.0 / 100.0)
             else:
                 self._last_brightness = self._node.status
-        super().async_on_update(event)
+        super().async_on_update(event, key)
 
     async def async_turn_on(self, brightness: int | None = None, **kwargs: Any) -> None:
         """Send the turn on command to the ISY light device."""
@@ -103,9 +102,7 @@ class ISYLightEntity(ISYNodeEntity, LightEntity, RestoreEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the light attributes."""
-        attribs = super().extra_state_attributes
-        attribs[ATTR_LAST_BRIGHTNESS] = self._last_brightness
-        return attribs
+        return {ATTR_LAST_BRIGHTNESS: self._last_brightness}
 
     async def async_added_to_hass(self) -> None:
         """Restore last_brightness on restart."""

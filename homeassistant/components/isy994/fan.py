@@ -4,7 +4,9 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from pyisy.constants import ISY_VALUE_UNKNOWN, PROTO_INSTEON
+from pyisyox.constants import Protocol
+from pyisyox.nodes import Node
+from pyisyox.programs import Program
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.config_entries import ConfigEntry
@@ -33,7 +35,9 @@ async def async_setup_entry(
     entities: list[ISYFanEntity | ISYFanProgramEntity] = []
 
     for node in isy_data.nodes[Platform.FAN]:
-        entities.append(ISYFanEntity(node, devices.get(node.primary_node)))
+        entities.append(
+            ISYFanEntity(node=node, device_info=devices.get(node.primary_node))
+        )
 
     for name, status, actions in isy_data.programs[Platform.FAN]:
         entities.append(ISYFanProgramEntity(name, status, actions))
@@ -45,25 +49,26 @@ class ISYFanEntity(ISYNodeEntity, FanEntity):
     """Representation of an ISY fan device."""
 
     _attr_supported_features = FanEntityFeature.SET_SPEED
+    _node: Node
 
     @property
     def percentage(self) -> int | None:
         """Return the current speed percentage."""
-        if self._node.status == ISY_VALUE_UNKNOWN:
+        if self._node.status is None:
             return None
         return ranged_value_to_percentage(SPEED_RANGE, self._node.status)
 
     @property
     def speed_count(self) -> int:
         """Return the number of speeds the fan supports."""
-        if self._node.protocol == PROTO_INSTEON:
+        if self._node.protocol == Protocol.INSTEON:
             return 3
         return int_states_in_range(SPEED_RANGE)
 
     @property
     def is_on(self) -> bool | None:
         """Get if the fan is on."""
-        if self._node.status == ISY_VALUE_UNKNOWN:
+        if self._node.status is None:
             return None
         return bool(self._node.status != 0)
 
@@ -94,12 +99,14 @@ class ISYFanEntity(ISYNodeEntity, FanEntity):
 class ISYFanProgramEntity(ISYProgramEntity, FanEntity):
     """Representation of an ISY fan program."""
 
+    _actions: Program
+
     @property
     def percentage(self) -> int | None:
         """Return the current speed percentage."""
-        if self._node.status == ISY_VALUE_UNKNOWN:
+        if self._node.status is None:
             return None
-        return ranged_value_to_percentage(SPEED_RANGE, self._node.status)
+        return ranged_value_to_percentage(SPEED_RANGE, float(self._node.status))
 
     @property
     def speed_count(self) -> int:

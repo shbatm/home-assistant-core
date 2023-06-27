@@ -4,20 +4,18 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from pyisy.constants import (
+from pyisyox.constants import (
     ATTR_ACTION,
     CMD_BACKLIGHT,
-    DEV_BL_ADDR,
-    DEV_CMD_MEMORY_WRITE,
-    DEV_MEMORY,
-    ISY_VALUE_UNKNOWN,
     PROP_ON_LEVEL,
     TAG_ADDRESS,
     UOM_PERCENTAGE,
+    NodeChangeAction,
 )
-from pyisy.helpers import EventListener, NodeProperty
-from pyisy.nodes import Node, NodeChangedEvent
-from pyisy.variables import Variable
+from pyisyox.helpers.events import ATTR_EVENT_INFO, EventListener, NodeChangedEvent
+from pyisyox.helpers.models import NodeProperty
+from pyisyox.nodes import Node
+from pyisyox.variables import Variable
 
 from homeassistant.components.number import (
     NumberEntity,
@@ -44,13 +42,13 @@ from homeassistant.util.percentage import (
 )
 
 from .const import (
+    BACKLIGHT_MEMORY_FILTER,
     CONF_VAR_SENSOR_STRING,
     DEFAULT_VAR_SENSOR_STRING,
     DOMAIN,
     UOM_8_BIT_RANGE,
 )
-from .entity import ISYAuxControlEntity
-from .helpers import convert_isy_value_to_hass
+from .entity import ISYNodeEntity
 
 ISY_MAX_SIZE = (2**32) / 2
 ON_RANGE = (1, 255)  # Off is not included
@@ -72,7 +70,6 @@ CONTROL_DESC = {
         native_step=1.0,
     ),
 }
-BACKLIGHT_MEMORY_FILTER = {"memory": DEV_BL_ADDR, "cmd1": DEV_CMD_MEMORY_WRITE}
 
 
 async def async_setup_entry(
@@ -89,8 +86,8 @@ async def async_setup_entry(
     var_id = config_entry.options.get(CONF_VAR_SENSOR_STRING, DEFAULT_VAR_SENSOR_STRING)
 
     for node in isy_data.variables[Platform.NUMBER]:
-        step = 10 ** (-1 * int(node.prec))
-        min_max = ISY_MAX_SIZE / (10 ** int(node.prec))
+        step = 10 ** (-1 * node.precision)
+        min_max = ISY_MAX_SIZE / (10**node.precision)
         description = NumberEntityDescription(
             key=node.address,
             name=node.name,
@@ -140,7 +137,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class ISYAuxControlNumberEntity(ISYAuxControlEntity, NumberEntity):
+class ISYAuxControlNumberEntity(ISYNodeEntity, NumberEntity):
     """Representation of a ISY/IoX Aux Control Number entity."""
 
     _attr_mode = NumberMode.SLIDER
@@ -149,7 +146,7 @@ class ISYAuxControlNumberEntity(ISYAuxControlEntity, NumberEntity):
     def native_value(self) -> float | int | None:
         """Return the state of the variable."""
         node_prop: NodeProperty = self._node.aux_properties[self._control]
-        if node_prop.value == ISY_VALUE_UNKNOWN:
+        if node_prop.value is None:
             return None
 
         if (
@@ -170,7 +167,7 @@ class ISYAuxControlNumberEntity(ISYAuxControlEntity, NumberEntity):
                 else value
             )
         if self._control == PROP_ON_LEVEL:
-            await self._node.set_on_level(value)
+            await self._node.set_on_level(int(value))
             return
 
         if not await self._node.send_cmd(self._control, val=value, uom=node_prop.uom):
@@ -219,11 +216,7 @@ class ISYVariableNumberEntity(NumberEntity):
     @property
     def native_value(self) -> float | int | None:
         """Return the state of the variable."""
-        return convert_isy_value_to_hass(
-            self._node.init if self._init_entity else self._node.status,
-            "",
-            self._node.prec,
-        )
+        return self._node.initial if self._init_entity else self._node.status
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -240,7 +233,7 @@ class ISYVariableNumberEntity(NumberEntity):
             )
 
 
-class ISYBacklightNumberEntity(ISYAuxControlEntity, RestoreNumber):
+class ISYBacklightNumberEntity(ISYNodeEntity, RestoreNumber):
     """Representation of a ISY/IoX Backlight Number entity."""
 
     _assumed_state = True  # Backlight values aren't read from device
@@ -254,7 +247,13 @@ class ISYBacklightNumberEntity(ISYAuxControlEntity, RestoreNumber):
         device_info: DeviceInfo | None,
     ) -> None:
         """Initialize the ISY Backlight number entity."""
-        super().__init__(node, control, unique_id, description, device_info)
+        super().__init__(
+            node=node,
+            control=control,
+            unique_id=unique_id,
+            description=description,
+            device_info=device_info,
+        )
         self._memory_change_handler: EventListener | None = None
         self._attr_native_value = 0
 
@@ -268,11 +267,12 @@ class ISYBacklightNumberEntity(ISYAuxControlEntity, RestoreNumber):
                 self._attr_native_value = last_number_data.native_value
 
         # Listen to memory writing events to update state if changed in ISY
-        self._memory_change_handler = self._node.isy.nodes.status_events.subscribe(
+        self._memory_change_handler = self._node.isy.nodes.platform_events.subscribe(
             self.async_on_memory_write,
             event_filter={
                 TAG_ADDRESS: self._node.address,
-                ATTR_ACTION: DEV_MEMORY,
+                ATTR_ACTION: NodeChangeAction.DEVICE_MEMORY,
+                ATTR_EVENT_INFO: BACKLIGHT_MEMORY_FILTER,
             },
             key=self.unique_id,
         )
@@ -280,8 +280,6 @@ class ISYBacklightNumberEntity(ISYAuxControlEntity, RestoreNumber):
     @callback
     def async_on_memory_write(self, event: NodeChangedEvent, key: str) -> None:
         """Handle a memory write event from the ISY Node."""
-        if not (BACKLIGHT_MEMORY_FILTER.items() <= event.event_info.items()):
-            return  # This was not a backlight event
         value = ranged_value_to_percentage((0, 127), event.event_info["value"])
         if value == self._attr_native_value:
             return  # Change was from this entity, don't update twice

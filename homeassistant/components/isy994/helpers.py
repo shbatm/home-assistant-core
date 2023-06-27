@@ -1,41 +1,42 @@
 """Sorting helpers for ISY device classifications."""
 from __future__ import annotations
 
-from typing import cast
+from types import MappingProxyType
+from typing import Any, cast
 
-from pyisy.constants import (
+from pyisyox.constants import (
     BACKLIGHT_SUPPORT,
     CMD_BACKLIGHT,
-    ISY_VALUE_UNKNOWN,
     PROP_BUSY,
     PROP_COMMS_ERROR,
     PROP_ON_LEVEL,
     PROP_RAMP_RATE,
     PROP_STATUS,
-    PROTO_GROUP,
-    PROTO_INSTEON,
-    PROTO_PROGRAM,
-    PROTO_ZWAVE,
     TAG_ENABLED,
-    TAG_FOLDER,
     UOM_INDEX,
+    Protocol,
 )
-from pyisy.nodes import Group, Node, Nodes
-from pyisy.programs import Programs
+from pyisyox.nodes import Group, Node, Nodes
+from pyisyox.programs import Programs
+from pyisyox.variables import Variables
 
 from homeassistant.const import ATTR_MANUFACTURER, ATTR_MODEL, Platform
 from homeassistant.helpers.entity import DeviceInfo
 
 from .const import (
     _LOGGER,
+    CONF_ENABLE_NODESERVERS,
+    CONF_IGNORE_STRING,
+    CONF_SENSOR_STRING,
+    DEFAULT_IGNORE_STRING,
     DEFAULT_PROGRAM_STRING,
+    DEFAULT_SENSOR_STRING,
     DOMAIN,
     FILTER_INSTEON_TYPE,
     FILTER_NODE_DEF_ID,
     FILTER_STATES,
     FILTER_UOM,
     FILTER_ZWAVE_CAT,
-    ISY_GROUP_PLATFORM,
     KEY_ACTIONS,
     KEY_STATUS,
     NODE_AUX_FILTERS,
@@ -64,7 +65,7 @@ SKIP_AUX_PROPS = {PROP_BUSY, PROP_COMMS_ERROR, PROP_STATUS, *ROOT_AUX_CONTROLS}
 
 
 def _check_for_node_def(
-    isy_data: IsyData, node: Group | Node, single_platform: Platform | None = None
+    isy_data: IsyData, node: Node, single_platform: Platform | None = None
 ) -> bool:
     """Check if the node matches the node_def_id for any platforms.
 
@@ -86,8 +87,18 @@ def _check_for_node_def(
     return False
 
 
+def _check_for_node_server_def(isy_data: IsyData, node: Node) -> bool:
+    """Check if the node is a Node Server node with assigned platforms.
+
+    Node Servers can provide their own definitions of devices so we
+    test what they support if advanced configuration is enabled.
+    """
+    # FUTURE: Move sorting here to check for binary_sensor, sensor, switch
+    return False
+
+
 def _check_for_insteon_type(
-    isy_data: IsyData, node: Group | Node, single_platform: Platform | None = None
+    isy_data: IsyData, node: Node, single_platform: Platform | None = None
 ) -> bool:
     """Check if the node matches the Insteon type for any platforms.
 
@@ -95,13 +106,13 @@ def _check_for_insteon_type(
     works for Insteon device. "Node Server" (v5+) and Z-Wave and others will
     not have a type.
     """
-    if node.protocol != PROTO_INSTEON:
+    if node.protocol != Protocol.INSTEON:
         return False
-    if not hasattr(node, "type") or node.type is None:
+    if not hasattr(node, "type") or node.type_ is None:
         # Node doesn't have a type (non-Insteon device most likely)
         return False
 
-    device_type = node.type
+    device_type = node.type_
     platforms = NODE_PLATFORMS if not single_platform else [single_platform]
     for platform in platforms:
         if any(
@@ -151,14 +162,14 @@ def _check_for_insteon_type(
 
 
 def _check_for_zwave_cat(
-    isy_data: IsyData, node: Group | Node, single_platform: Platform | None = None
+    isy_data: IsyData, node: Node, single_platform: Platform | None = None
 ) -> bool:
     """Check if the node matches the ISY Z-Wave Category for any platforms.
 
     This is for (presumably) every version of the ISY firmware, but only
     works for Z-Wave Devices with the devtype.cat property.
     """
-    if node.protocol != PROTO_ZWAVE:
+    if node.protocol != Protocol.ZWAVE:
         return False
 
     if not hasattr(node, "zwave_props") or node.zwave_props is None:
@@ -180,7 +191,7 @@ def _check_for_zwave_cat(
 
 def _check_for_uom_id(
     isy_data: IsyData,
-    node: Group | Node,
+    node: Node,
     single_platform: Platform | None = None,
     uom_list: list[str] | None = None,
 ) -> bool:
@@ -215,7 +226,7 @@ def _check_for_uom_id(
 
 def _check_for_states_in_uom(
     isy_data: IsyData,
-    node: Group | Node,
+    node: Node,
     single_platform: Platform | None = None,
     states_list: list[str] | None = None,
 ) -> bool:
@@ -250,7 +261,7 @@ def _check_for_states_in_uom(
     return False
 
 
-def _is_sensor_a_binary_sensor(isy_data: IsyData, node: Group | Node) -> bool:
+def _is_sensor_a_binary_sensor(isy_data: IsyData, node: Node) -> bool:
     """Determine if the given sensor node should be a binary_sensor."""
     if _check_for_node_def(isy_data, node, single_platform=Platform.BINARY_SENSOR):
         return True
@@ -281,7 +292,7 @@ def _is_sensor_a_binary_sensor(isy_data: IsyData, node: Group | Node) -> bool:
 
 def _add_backlight_if_supported(isy_data: IsyData, node: Node) -> None:
     """Check if a node supports setting a backlight and add entity."""
-    if not getattr(node, "is_backlight_supported", False):
+    if (not getattr(node, "is_backlight_supported", False)) or not node.node_def_id:
         return
     if BACKLIGHT_SUPPORT[node.node_def_id] == UOM_INDEX:
         isy_data.aux_properties[Platform.SELECT].append((node, CMD_BACKLIGHT))
@@ -294,11 +305,11 @@ def _generate_device_info(node: Node) -> DeviceInfo:
     isy = node.isy
     device_info = DeviceInfo(
         identifiers={(DOMAIN, f"{isy.uuid}_{node.address}")},
-        manufacturer=node.protocol.title(),
+        manufacturer=node.protocol.name.replace("_", " ").title(),
         name=node.name,
         via_device=(DOMAIN, isy.uuid),
         configuration_url=isy.conn.url,
-        suggested_area=node.folder,
+        suggested_area=isy.nodes.get_folder(node.address),
     )
 
     # ISYv5 Device Types can provide model and manufacturer
@@ -307,21 +318,19 @@ def _generate_device_info(node: Node) -> DeviceInfo:
         model += f": {node.node_def_id}"
 
     # Numerical Device Type
-    if node.type is not None:
-        model += f" ({node.type})"
+    if node.type_ is not None:
+        model += f" ({node.type_})"
 
     # Get extra information for Z-Wave Devices
     if (
-        node.protocol == PROTO_ZWAVE
-        and node.zwave_props
-        and node.zwave_props.mfr_id != "0"
+        node.protocol == Protocol.ZWAVE
+        and node.zwave_props is not None
+        and node.zwave_props.mfr_id != "0x0000"
     ):
-        device_info[
-            ATTR_MANUFACTURER
-        ] = f"Z-Wave MfrID:{int(node.zwave_props.mfr_id):#0{6}x}"
+        device_info[ATTR_MANUFACTURER] = f"Z-Wave MfrID:{node.zwave_props.mfr_id}"
         model += (
-            f"Type:{int(node.zwave_props.prod_type_id):#0{6}x} "
-            f"Product:{int(node.zwave_props.product_id):#0{6}x}"
+            f"Type:{node.zwave_props.prod_type_id} "
+            f"Product:{node.zwave_props.product_id}"
         )
     device_info[ATTR_MODEL] = model
 
@@ -329,16 +338,19 @@ def _generate_device_info(node: Node) -> DeviceInfo:
 
 
 def _categorize_nodes(
-    isy_data: IsyData, nodes: Nodes, ignore_identifier: str, sensor_identifier: str
+    isy_data: IsyData, nodes: Nodes, isy_options: MappingProxyType[str, Any]
 ) -> None:
     """Sort the nodes to their proper platforms."""
-    for path, node in nodes:
-        ignored = ignore_identifier in path or ignore_identifier in node.name
-        if ignored:
+    ignore_identifier = isy_options.get(CONF_IGNORE_STRING, DEFAULT_IGNORE_STRING)
+    sensor_identifier = isy_options.get(CONF_SENSOR_STRING, DEFAULT_SENSOR_STRING)
+    enable_nodeservers = isy_options.get(CONF_ENABLE_NODESERVERS, False)
+    directory = nodes.get_directory()
+    for path, node in directory.items():
+        if ignore_identifier in path or node.protocol == Protocol.NODE_FOLDER:
             # Don't import this node as a device at all
             continue
 
-        if hasattr(node, "parent_node") and node.parent_node is None:
+        if isinstance(node, Node) and node.is_device_root:
             # This is a physical device / parent node
             isy_data.devices[node.address] = _generate_device_info(node)
             isy_data.root_nodes[Platform.BUTTON].append(node)
@@ -354,15 +366,17 @@ def _categorize_nodes(
                 isy_data.aux_properties[Platform.SWITCH].append((node, TAG_ENABLED))
             _add_backlight_if_supported(isy_data, node)
 
-        if node.protocol == PROTO_GROUP:
-            isy_data.nodes[ISY_GROUP_PLATFORM].append(node)
+        if isinstance(node, Group):
+            isy_data.groups.append(node)
             continue
 
-        if node.protocol == PROTO_INSTEON:
-            for control in node.aux_properties:
-                if control in SKIP_AUX_PROPS:
-                    continue
-                isy_data.aux_properties[Platform.SENSOR].append((node, control))
+        for control in node.aux_properties:
+            if control in SKIP_AUX_PROPS:
+                continue
+            platform = Platform.SENSOR
+            if node.aux_properties[control].uom in BINARY_SENSOR_UOMS:
+                platform = Platform.BINARY_SENSOR
+            isy_data.aux_properties[platform].append((node, control))
 
         if sensor_identifier in path or sensor_identifier in node.name:
             # User has specified to treat this as a sensor. First we need to
@@ -381,6 +395,8 @@ def _categorize_nodes(
             continue
         if _check_for_zwave_cat(isy_data, node):
             continue
+        if enable_nodeservers and _check_for_node_server_def(isy_data, node):
+            continue
         if _check_for_uom_id(isy_data, node):
             continue
         if _check_for_states_in_uom(isy_data, node):
@@ -392,46 +408,64 @@ def _categorize_nodes(
 
 def _categorize_programs(isy_data: IsyData, programs: Programs) -> None:
     """Categorize the ISY programs."""
+    directory = programs.get_directory()
     for platform in PROGRAM_PLATFORMS:
-        folder = programs.get_by_name(f"{DEFAULT_PROGRAM_STRING}{platform}")
-        if not folder:
+        folder_name = f"{DEFAULT_PROGRAM_STRING}{platform}/"
+        try:
+            entities = {
+                path.partition(folder_name)[2]: entity
+                for path, entity in directory.items()
+                if folder_name in path
+            }
+        except KeyError:
             continue
 
-        for dtype, _, node_id in folder.children:
-            if dtype != TAG_FOLDER:
-                continue
-            entity_folder = folder[node_id]
+        if not entities:
+            continue
 
-            actions = None
-            status = entity_folder.get_by_name(KEY_STATUS)
-            if not status or status.protocol != PROTO_PROGRAM:
+        status_programs = {
+            path.rstrip(f"/{KEY_STATUS}"): status
+            for path, status in entities.items()
+            if path.endswith(KEY_STATUS)
+        }
+        action_programs = {
+            path.rstrip(f"/{KEY_ACTIONS}"): action
+            for path, action in entities.items()
+            if path.endswith(KEY_ACTIONS)
+        }
+
+        for name, program in status_programs.items():
+            if platform != Platform.BINARY_SENSOR and name not in action_programs:
                 _LOGGER.warning(
-                    "Program %s entity '%s' not loaded, invalid/missing status program",
+                    (
+                        "Program %s entity '%s' not loaded, invalid/missing actions"
+                        " program"
+                    ),
                     platform,
-                    entity_folder.name,
+                    name,
                 )
-                continue
-
-            if platform != Platform.BINARY_SENSOR:
-                actions = entity_folder.get_by_name(KEY_ACTIONS)
-                if not actions or actions.protocol != PROTO_PROGRAM:
-                    _LOGGER.warning(
-                        (
-                            "Program %s entity '%s' not loaded, invalid/missing actions"
-                            " program"
-                        ),
-                        platform,
-                        entity_folder.name,
-                    )
-                    continue
-
-            entity = (entity_folder.name, status, actions)
+            entity = (name, program, action_programs.get(name))
             isy_data.programs[platform].append(entity)
+
+
+def _categorize_variables(
+    isy_data: IsyData, variables: Variables, identifier: str
+) -> None:
+    """Gather the ISY Variables to be added as sensors."""
+    try:
+        if not (variables.loaded and variables.entities):
+            return
+
+        numbers = isy_data.variables[Platform.NUMBER]
+        for variable in variables.values():
+            numbers.append(variable)
+    except KeyError as err:
+        _LOGGER.error("Error adding ISY Variables: %s", err)
 
 
 def convert_isy_value_to_hass(
     value: int | float | None,
-    uom: str | None,
+    uom: str | list | None,
     precision: int | str,
     fallback_precision: int | None = None,
 ) -> float | int | None:
@@ -444,7 +478,7 @@ def convert_isy_value_to_hass(
     Insteon Thermostats report temperature in 0.5-deg precision as an int
     by sending a value of 2 times the Temp. Correct by dividing by 2 here.
     """
-    if value is None or value == ISY_VALUE_UNKNOWN:
+    if value is None or value is None:
         return None
     if uom in (UOM_DOUBLE_TEMP, UOM_ISYV4_DEGREES):
         return round(float(value) / 2.0, 1)

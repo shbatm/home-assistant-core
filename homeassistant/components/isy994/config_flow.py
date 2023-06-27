@@ -8,9 +8,13 @@ from urllib.parse import urlparse, urlunparse
 
 from aiohttp import CookieJar
 import async_timeout
-from pyisy import ISYConnectionError, ISYInvalidAuthError, ISYResponseParseError
-from pyisy.configuration import Configuration
-from pyisy.connection import Connection
+from pyisyox import ISYResponseParseError
+from pyisyox.connection import (
+    Connection,
+    ISYConnectionError,
+    ISYConnectionInfo,
+    ISYInvalidAuthError,
+)
 import voluptuous as vol
 
 from homeassistant import config_entries, core, exceptions
@@ -21,6 +25,10 @@ from homeassistant.data_entry_flow import AbortFlow, FlowResult
 from homeassistant.helpers import aiohttp_client
 
 from .const import (
+    CONF_ENABLE_NETWORKING,
+    CONF_ENABLE_NODESERVERS,
+    CONF_ENABLE_PROGRAMS,
+    CONF_ENABLE_VARIABLES,
     CONF_IGNORE_STRING,
     CONF_RESTORE_LIGHT_STATE,
     CONF_SENSOR_STRING,
@@ -34,7 +42,6 @@ from .const import (
     DOMAIN,
     HTTP_PORT,
     HTTPS_PORT,
-    ISY_CONF_NAME,
     ISY_CONF_UUID,
     ISY_URL_POSTFIX,
     SCHEME_HTTP,
@@ -52,7 +59,9 @@ def _data_schema(schema_input: dict[str, str]) -> vol.Schema:
             vol.Required(CONF_HOST, default=schema_input.get(CONF_HOST, "")): str,
             vol.Required(CONF_USERNAME): str,
             vol.Required(CONF_PASSWORD): str,
-            vol.Optional(CONF_TLS_VER, default=DEFAULT_TLS_VERSION): vol.In([1.1, 1.2]),
+            vol.Optional(CONF_TLS_VER, default=DEFAULT_TLS_VERSION): vol.In(
+                [DEFAULT_TLS_VERSION, 1.1, 1.2]
+            ),
         },
         extra=vol.ALLOW_EXTRA,
     )
@@ -67,54 +76,46 @@ async def validate_input(
     """
     user = data[CONF_USERNAME]
     password = data[CONF_PASSWORD]
-    host = urlparse(data[CONF_HOST])
+    host = data[CONF_HOST]
+    parsed_host = urlparse(host)
     tls_version = data.get(CONF_TLS_VER)
 
-    if host.scheme == SCHEME_HTTP:
-        https = False
-        port = host.port or HTTP_PORT
+    if parsed_host.scheme == SCHEME_HTTP:
         session = aiohttp_client.async_create_clientsession(
             hass, verify_ssl=False, cookie_jar=CookieJar(unsafe=True)
         )
-    elif host.scheme == SCHEME_HTTPS:
-        https = True
-        port = host.port or HTTPS_PORT
+    elif parsed_host.scheme == SCHEME_HTTPS:
         session = aiohttp_client.async_get_clientsession(hass)
     else:
         _LOGGER.error("The ISY/IoX host value in configuration is invalid")
         raise InvalidHost
 
-    # Connect to ISY controller.
-    isy_conn = Connection(
-        host.hostname,
-        port,
+    # Generate configuration info
+    connection_info = ISYConnectionInfo(
+        host,
         user,
         password,
-        use_https=https,
-        tls_ver=tls_version,
-        webroot=host.path,
+        tls_version=tls_version if tls_version != DEFAULT_TLS_VERSION else None,
         websession=session,
     )
 
+    # Connect to ISY controller.
+    isy_conn = Connection(connection_info)
+
     try:
         async with async_timeout.timeout(30):
-            isy_conf_xml = await isy_conn.test_connection()
+            isy_config = await isy_conn.test_connection()
     except ISYInvalidAuthError as error:
         raise InvalidAuth from error
     except ISYConnectionError as error:
         raise CannotConnect from error
-
-    try:
-        isy_conf = Configuration(xml=isy_conf_xml)
     except ISYResponseParseError as error:
         raise CannotConnect from error
-    if not isy_conf or ISY_CONF_NAME not in isy_conf or not isy_conf[ISY_CONF_NAME]:
-        raise CannotConnect
 
     # Return info that you want to store in the config entry.
     return {
-        "title": f"{isy_conf[ISY_CONF_NAME]} ({host.hostname})",
-        ISY_CONF_UUID: isy_conf[ISY_CONF_UUID],
+        "title": f"{isy_config.name} ({parsed_host.hostname})",
+        ISY_CONF_UUID: isy_config.uuid,
     }
 
 
@@ -323,6 +324,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         var_sensor_string = options.get(
             CONF_VAR_SENSOR_STRING, DEFAULT_VAR_SENSOR_STRING
         )
+        enable_variables = options.get(CONF_ENABLE_VARIABLES, True)
+        enable_nodeservers = options.get(CONF_ENABLE_NODESERVERS, True)
+        enable_programs = options.get(CONF_ENABLE_PROGRAMS, True)
+        enable_networking = options.get(CONF_ENABLE_NETWORKING, True)
 
         options_schema = vol.Schema(
             {
@@ -332,6 +337,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_RESTORE_LIGHT_STATE, default=restore_light_state
                 ): bool,
+                vol.Required(CONF_ENABLE_VARIABLES, default=enable_variables): bool,
+                vol.Required(CONF_ENABLE_NODESERVERS, default=enable_nodeservers): bool,
+                vol.Required(CONF_ENABLE_PROGRAMS, default=enable_programs): bool,
+                vol.Required(CONF_ENABLE_NETWORKING, default=enable_networking): bool,
             }
         )
 
