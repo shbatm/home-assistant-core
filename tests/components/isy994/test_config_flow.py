@@ -1,7 +1,6 @@
 """Test the Universal Devices ISY/IoX config flow."""
 
 import re
-import ssl
 from unittest.mock import AsyncMock, patch
 
 import aiohttp
@@ -197,11 +196,8 @@ async def test_form_isy_ssl_error(hass: HomeAssistant) -> None:
     Uses an HTTPS URL so the HTTPS session branch (which honors verify_ssl)
     is also exercised.
     """
-    ssl_cause = aiohttp.ClientSSLError(
-        connection_key=None, os_error=ssl.SSLError("handshake failed")
-    )
     isy_error = ISYConnectionError("ssl handshake failed")
-    isy_error.__cause__ = ssl_cause
+    isy_error.__cause__ = aiohttp.ClientSSLError.__new__(aiohttp.ClientSSLError)
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -745,9 +741,7 @@ async def test_reauth(hass: HomeAssistant) -> None:
     assert result3["errors"] == {"base": "cannot_connect"}
 
     ssl_error = ISYConnectionError("ssl handshake failed")
-    ssl_error.__cause__ = aiohttp.ClientSSLError(
-        connection_key=None, os_error=ssl.SSLError("handshake failed")
-    )
+    ssl_error.__cause__ = aiohttp.ClientSSLError.__new__(aiohttp.ClientSSLError)
     with patch(PATCH_CONNECTION, side_effect=ssl_error):
         result_ssl = await hass.config_entries.flow.async_configure(
             result3["flow_id"],
